@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type Status = 'idle' | 'running' | 'paused' | 'done'
 const QUICK_OPTIONS = [5, 10, 20, 40]
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY ?? ''
 
 function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)
@@ -60,6 +61,7 @@ export default function App() {
   const endAt = useRef<number | null>(null)
   const played = useRef(false)
   const audioContext = useRef<AudioContext | null>(null)
+  const [reminderMessage, setReminderMessage] = useState('')
 
   const unlockAudio = useCallback(() => {
     if (audioContext.current?.state === 'closed') audioContext.current = null
@@ -100,6 +102,29 @@ export default function App() {
   }
   const pause = () => { if (endAt.current) setRemaining(Math.max(0, Math.ceil((endAt.current - Date.now()) / 1000))); endAt.current = null; setStatus('paused') }
   const reset = () => { setRemaining(duration); setStatus('idle'); endAt.current = null; played.current = false }
+  const enableLockScreenReminder = async () => {
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+    if (!isStandalone) {
+      setReminderMessage('请先将番茄钟添加到 iPhone 主屏幕，再启用锁屏提醒。')
+      return
+    }
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setReminderMessage('当前浏览器不支持 Web Push。请使用 iOS 16.4 以上的主屏幕 Web App。')
+      return
+    }
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') {
+      setReminderMessage(permission === 'denied' ? '通知权限已被拒绝，请在系统设置中允许。' : '尚未允许通知权限。')
+      return
+    }
+    if (!VAPID_PUBLIC_KEY) {
+      setReminderMessage('通知权限已允许，但项目尚未配置 VAPID 公钥和后台订阅接口。')
+      return
+    }
+    // PushManager.subscribe will be added after the VAPID key and backend endpoint are configured.
+    setReminderMessage('通知权限已允许，等待后台推送服务配置。')
+  }
   const progress = useMemo(() => duration ? remaining / duration : 0, [duration, remaining])
   const dashOffset = 552.92 * (1 - progress)
 
@@ -113,6 +138,7 @@ export default function App() {
       <div className="quick-options">{QUICK_OPTIONS.map(minutes => <button className={duration === minutes * 60 ? 'quick active' : 'quick'} key={minutes} onClick={() => selectDuration(minutes)}>{minutes}<small>分钟</small></button>)}</div>
       <form className="custom-form" onSubmit={e => { e.preventDefault(); const value = Number(customMinutes); if (Number.isFinite(value) && value > 0 && value <= 999) selectDuration(value) }}><input inputMode="numeric" pattern="[0-9]*" placeholder="自定义分钟" value={customMinutes} onChange={e => setCustomMinutes(e.target.value)} aria-label="自定义分钟" /><button type="submit">设置</button></form>
       <div className="controls"><button className="primary" onClick={status === 'running' ? pause : start} disabled={status === 'done' && remaining === 0}>{status === 'running' ? '暂停' : status === 'paused' ? '继续' : '开始'}</button><button className="secondary" onClick={reset}>重置</button></div>
+      <div className="reminder-panel"><button className="reminder-button" onClick={() => void enableLockScreenReminder()}>启用锁屏提醒</button>{reminderMessage && <p className="reminder-message" role="status">{reminderMessage}</p>}</div>
       <p className="note">选择时长后不会自动开始</p>
     </section>
   </main>
