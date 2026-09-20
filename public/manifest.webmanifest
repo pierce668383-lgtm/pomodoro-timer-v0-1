@@ -1,0 +1,9 @@
+{
+  "name": "极简番茄钟",
+  "short_name": "番茄钟",
+  "id": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#f3f4f1",
+  "background_color": "#f3f4f1"
+}
