@@ -8,22 +8,48 @@ function formatTime(seconds: number) {
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`
 }
 
-function playChime() {
-  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-  if (!AudioContextClass) return
-  const context = new AudioContextClass()
-  const oscillator = context.createOscillator()
-  const gain = context.createGain()
-  oscillator.type = 'sine'
-  oscillator.frequency.setValueAtTime(880, context.currentTime)
-  oscillator.frequency.exponentialRampToValueAtTime(660, context.currentTime + 0.18)
-  gain.gain.setValueAtTime(0.0001, context.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.015)
-  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22)
-  oscillator.connect(gain).connect(context.destination)
-  oscillator.start()
-  oscillator.stop(context.currentTime + 0.24)
-  oscillator.addEventListener('ended', () => void context.close())
+type AudioContextWindow = Window & typeof globalThis & {
+  webkitAudioContext?: typeof AudioContext
+}
+
+function createAudioContext() {
+  const AudioContextClass = window.AudioContext || (window as AudioContextWindow).webkitAudioContext
+  return AudioContextClass ? new AudioContextClass() : null
+}
+
+function playChime(context: AudioContext) {
+  const now = context.currentTime
+  const bellDuration = 0.52
+  const secondBellAt = 0.48
+
+  const scheduleBell = (start: number, frequency: number, volume: number) => {
+    const master = context.createGain()
+    master.gain.setValueAtTime(0.0001, start)
+    master.gain.exponentialRampToValueAtTime(volume, start + 0.014)
+    master.gain.exponentialRampToValueAtTime(0.0001, start + bellDuration)
+    master.connect(context.destination)
+
+    // Fundamental plus two quiet partials gives each tone a clear electronic-bell shimmer.
+    ;[
+      { multiplier: 1, level: 0.78 },
+      { multiplier: 2, level: 0.22 },
+      { multiplier: 3, level: 0.08 },
+    ].forEach(({ multiplier, level }) => {
+      const oscillator = context.createOscillator()
+      const partialGain = context.createGain()
+      oscillator.type = 'sine'
+      oscillator.frequency.setValueAtTime(frequency * multiplier, start)
+      partialGain.gain.value = level
+      oscillator.connect(partialGain).connect(master)
+      oscillator.start(start)
+      oscillator.stop(start + bellDuration)
+    })
+  }
+
+  // High, bright “ding”, followed by a lower “dong” after a short audible gap.
+  scheduleBell(now, 1320, 0.30)
+  scheduleBell(now + secondBellAt, 880, 0.32)
+  window.setTimeout(() => void context.close(), 1250)
 }
 
 export default function App() {
@@ -33,6 +59,14 @@ export default function App() {
   const [customMinutes, setCustomMinutes] = useState('')
   const endAt = useRef<number | null>(null)
   const played = useRef(false)
+  const audioContext = useRef<AudioContext | null>(null)
+
+  const unlockAudio = useCallback(() => {
+    if (audioContext.current?.state === 'closed') audioContext.current = null
+    audioContext.current ??= createAudioContext()
+    if (audioContext.current?.state === 'suspended') return audioContext.current.resume()
+    return Promise.resolve()
+  }, [])
 
   const selectDuration = useCallback((minutes: number) => {
     const seconds = Math.max(1, Math.round(minutes * 60))
@@ -44,14 +78,26 @@ export default function App() {
     const tick = () => {
       const next = Math.max(0, Math.ceil((endAt.current! - Date.now()) / 1000))
       setRemaining(next)
-      if (next <= 0 && !played.current) { played.current = true; setStatus('done'); playChime() }
+      if (next <= 0 && !played.current) {
+        played.current = true
+        setStatus('done')
+        const context = audioContext.current
+        if (context?.state === 'running') playChime(context)
+        else if (context) void context.resume().then(() => {
+          if (context.state === 'running') playChime(context)
+        })
+      }
     }
     tick()
     const timer = window.setInterval(tick, 250)
     return () => window.clearInterval(timer)
   }, [status])
 
-  const start = () => { endAt.current = Date.now() + remaining * 1000; setStatus('running') }
+  const start = () => {
+    void unlockAudio()
+    endAt.current = Date.now() + remaining * 1000
+    setStatus('running')
+  }
   const pause = () => { if (endAt.current) setRemaining(Math.max(0, Math.ceil((endAt.current - Date.now()) / 1000))); endAt.current = null; setStatus('paused') }
   const reset = () => { setRemaining(duration); setStatus('idle'); endAt.current = null; played.current = false }
   const progress = useMemo(() => duration ? remaining / duration : 0, [duration, remaining])
